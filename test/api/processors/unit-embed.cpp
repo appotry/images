@@ -1,4 +1,5 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "../base.h"
 #include "../similar_image.h"
@@ -11,12 +12,8 @@ using vips::VImage;
 TEST_CASE("embed", "[embed]") {
     // TIFF letterbox known to cause rounding errors
     SECTION("tiff") {
-        if (vips_type_find("VipsOperation", true_streaming
-                                                ? "tiffload_source"
-                                                : "tiffload_buffer") == 0 ||
-            vips_type_find("VipsOperation", true_streaming
-                                                ? "tiffsave_target"
-                                                : "tiffsave_buffer") == 0) {
+        if (vips_type_find("VipsOperation", "tiffload_buffer") == 0 ||
+            vips_type_find("VipsOperation", "tiffsave_buffer") == 0) {
             SUCCEED("no tiff support, skipping test");
             return;
         }
@@ -35,9 +32,7 @@ TEST_CASE("embed", "[embed]") {
 
     // Letterbox TIFF in LAB colourspace onto RGBA background
     SECTION("tiff on rgba") {
-        if (vips_type_find("VipsOperation", true_streaming
-                                                ? "tiffload_buffer"
-                                                : "tiffload_source") == 0) {
+        if (vips_type_find("VipsOperation", "tiffload_buffer") == 0) {
             SUCCEED("no tiff support, skipping test");
             return;
         }
@@ -173,7 +168,7 @@ TEST_CASE("embed", "[embed]") {
 
 TEST_CASE("skip", "[embed]") {
     auto test_image = fixtures->input_jpg;
-    auto params = "w=320&h=261&fit=contain&fsol=0";
+    auto params = "w=320&h=261&fit=contain";
 
     VImage image = process_file<VImage>(test_image, params);
 
@@ -181,22 +176,36 @@ TEST_CASE("skip", "[embed]") {
     CHECK(image.height() == 261);
 }
 
-TEST_CASE("skip height in toilet-roll mode", "[embed]") {
-    if (vips_type_find("VipsOperation", true_streaming
-                                            ? "gifload_source"
-                                            : "gifload_buffer") == 0 ||
-        vips_type_find("VipsOperation", pre_8_12
-                                            ? "magicksave_buffer"
-                                            : "gifsave_target") == 0) {
-        SUCCEED("no gif support, skipping test");
-        return;
+TEST_CASE("animated image", "[embed]") {
+    SECTION("width only") {
+        if (vips_type_find("VipsOperation", "gifload_buffer") == 0 ||
+            vips_type_find("VipsOperation", "gifsave_buffer") == 0) {
+            SUCCEED("no gif support, skipping test");
+            return;
+        }
+
+        auto test_image = fixtures->input_gif_animated;
+        auto params = "n=-1&w=400&h=300&fit=contain";
+
+        VImage image = process_file<VImage>(test_image, params);
+
+        CHECK(image.width() == 400);
+        CHECK(vips_image_get_page_height(image.get_image()) == 300);
     }
 
-    auto test_image = fixtures->input_gif_animated;
-    auto params = "n=-1&w=300&h=400&fit=contain";
+    SECTION("height only") {
+        if (vips_type_find("VipsOperation", "gifload_buffer") == 0 ||
+            vips_type_find("VipsOperation", "gifsave_buffer") == 0) {
+            SUCCEED("no gif support, skipping test");
+            return;
+        }
 
-    VImage image = process_file<VImage>(test_image, params);
+        auto test_image = fixtures->input_gif_animated;
+        auto params = "n=-1&w=300&h=400&fit=contain";
 
-    CHECK(image.width() == 300);
-    CHECK(vips_image_get_page_height(image.get_image()) == 318);
+        VImage image = process_file<VImage>(test_image, params);
+
+        CHECK(image.width() == 300);
+        CHECK(vips_image_get_page_height(image.get_image()) == 400);
+    }
 }

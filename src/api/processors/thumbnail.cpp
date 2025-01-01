@@ -1,15 +1,14 @@
 #include "thumbnail.h"
 
 #include "../exceptions/large.h"
+#include "../io/blob.h"
+#include "../utils/utility.h"
 
 #include <algorithm>
 #include <cmath>
 #include <string>
-#include <tuple>
 
-namespace weserv {
-namespace api {
-namespace processors {
+namespace weserv::api::processors {
 
 using enums::Canvas;
 using enums::ImageType;
@@ -18,20 +17,63 @@ using enums::ImageType;
 // shrink-on-load feature. You can set this to false for more
 // consistent results and to avoid occasional small image shifting.
 // NOTE: Can be overridden with `&fsol=0`.
-const bool FAST_SHRINK_ON_LOAD = true;
+constexpr bool FAST_SHRINK_ON_LOAD = true;
 
+using io::Blob;
 using io::Source;
+
+template <>
+VImage
+Thumbnail::new_from_source<ImageType::Jpeg>(const Source &source,
+                                            vips::VOption *options) const {
+    return VImage::jpegload_source(source, options);
+}
+
+template <>
+VImage
+Thumbnail::new_from_source<ImageType::Pdf>(const Source &source,
+                                           vips::VOption *options) const {
+    return VImage::pdfload_source(source, options);
+}
+
+template <>
+VImage
+Thumbnail::new_from_source<ImageType::Webp>(const Source &source,
+                                            vips::VOption *options) const {
+    return VImage::webpload_source(source, options);
+}
+
+template <>
+VImage
+Thumbnail::new_from_source<ImageType::Tiff>(const Source &source,
+                                            vips::VOption *options) const {
+    return VImage::tiffload_source(source, options);
+}
+
+// TODO(kleisauke): Support whole-slide images(?)
+/*template <>
+VImage
+Thumbnail::new_from_source<ImageType::OpenSlide>(const Source &source,
+                                                 vips::VOption *options) const {
+    return VImage::openslideload_source(source, options);
+}*/
+
+template <>
+VImage
+Thumbnail::new_from_source<ImageType::Svg>(const Source &source,
+                                           vips::VOption *options) const {
+    return VImage::svgload_source(source, options);
+}
+
+template <>
+VImage
+Thumbnail::new_from_source<ImageType::Heif>(const Source &source,
+                                            vips::VOption *options) const {
+    return VImage::heifload_source(source, options);
+}
 
 std::pair<double, double> Thumbnail::resolve_shrink(int width,
                                                     int height) const {
-    auto rotation = query_->get<int>("angle", 0);
-    auto precrop = query_->get<bool>("precrop", false);
-
-    if (!precrop && (rotation == 90 || rotation == 270)) {
-        // Swap input width and height when rotating by 90 or 270 degrees
-        std::swap(width, height);
-    }
-
     double hshrink = 1.0;
     double vshrink = 1.0;
 
@@ -63,9 +105,6 @@ std::pair<double, double> Thumbnail::resolve_shrink(int width,
                 }
                 break;
             case Canvas::IgnoreAspect:
-                if (!precrop && (rotation == 90 || rotation == 270)) {
-                    std::swap(hshrink, vshrink);
-                }
                 break;
         }
     } else if (target_width > 0) {
@@ -96,42 +135,43 @@ std::pair<double, double> Thumbnail::resolve_shrink(int width,
     hshrink = std::min(hshrink, static_cast<double>(width));
     vshrink = std::min(vshrink, static_cast<double>(height));
 
-    return std::make_pair(hshrink, vshrink);
+    return std::pair{hshrink, vshrink};
 }
 
 double Thumbnail::resolve_common_shrink(int width, int height) const {
-    double hshrink;
-    double vshrink;
-
-    std::tie(hshrink, vshrink) = resolve_shrink(width, height);
+    auto [hshrink, vshrink] = resolve_shrink(width, height);
 
     return std::min(hshrink, vshrink);
 }
 
 int Thumbnail::resolve_jpeg_shrink(int width, int height) const {
     double shrink = resolve_common_shrink(width, height);
-
     int shrink_on_load_factor =
         query_->get<bool>("fsol", FAST_SHRINK_ON_LOAD) ? 1 : 2;
+    int jpeg_shrink_on_load = 1;
 
     // Shrink-on-load is a simple block shrink and will
-    // add quite a bit of extra sharpness to the image.
+    // add quite a bit of extra sharpness to the image
     if (shrink >= 8 * shrink_on_load_factor) {
-        return 8;
-    }
-    if (shrink >= 4 * shrink_on_load_factor) {
-        return 4;
-    }
-    if (shrink >= 2 * shrink_on_load_factor) {
-        return 2;
+        jpeg_shrink_on_load = 8;
+    } else if (shrink >= 4 * shrink_on_load_factor) {
+        jpeg_shrink_on_load = 4;
+    } else if (shrink >= 2 * shrink_on_load_factor) {
+        jpeg_shrink_on_load = 2;
     }
 
-    return 1;
+    // Lower shrink-on-load for known libjpeg rounding errors
+    if (jpeg_shrink_on_load > 1 &&
+        static_cast<int>(shrink) == jpeg_shrink_on_load) {
+        jpeg_shrink_on_load /= 2;
+    }
+
+    return jpeg_shrink_on_load;
 }
 
 int Thumbnail::resolve_tiff_pyramid(const VImage &image, const Source &source,
                                     int width, int height) const {
-    // Note: This is checked against config_.max_pages in stream.cpp.
+    // Note: This is checked against config_.max_pages in stream.cpp
     int n_pages = image.get_typeof(VIPS_META_N_PAGES) != 0
                       ? image.get_int(VIPS_META_N_PAGES)
                       : 1;
@@ -144,18 +184,11 @@ int Thumbnail::resolve_tiff_pyramid(const VImage &image, const Source &source,
     int target_page = -1;
 
     for (int i = n_pages - 1; i >= 0; i--) {
-        auto page =
-#ifdef WESERV_ENABLE_TRUE_STREAMING
-            VImage::new_from_source(
-                source, "",
-#else
-            VImage::new_from_buffer(
-                source.buffer(), "",
-#endif
-                VImage::option()
-                    ->set("access", VIPS_ACCESS_SEQUENTIAL)
-                    ->set("fail", config_.fail_on_error == 1)
-                    ->set("page", i));
+        auto page = new_from_source<ImageType::Tiff>(
+            source, VImage::option()
+                        ->set("access", VIPS_ACCESS_SEQUENTIAL)
+                        ->set("fail", config_.fail_on_error == 1)
+                        ->set("page", i));
 
         int level_width = page.width();
         int level_height = page.height();
@@ -177,7 +210,7 @@ int Thumbnail::resolve_tiff_pyramid(const VImage &image, const Source &source,
             target_page = i;
 
             // We may have found a pyramid, but we
-            // have to finish the loop to be sure.
+            // have to finish the loop to be sure
         }
     }
 
@@ -218,14 +251,7 @@ int Thumbnail::resolve_tiff_pyramid(const VImage &image, const Source &source,
 
 void Thumbnail::append_page_options(vips::VOption *options) const {
     auto n = query_->get<int>("n");
-    auto page = query_->get_if<int>(
-        "page",
-        [](int p) {
-            // Page needs to be in the range of
-            // 0 (numbered from zero) - 100000
-            return p >= 0 && p <= 100000;
-        },
-        0);
+    auto page = query_->get<int>("page");
 
     options->set("n", n);
     options->set("page", page);
@@ -234,9 +260,9 @@ void Thumbnail::append_page_options(vips::VOption *options) const {
 VImage Thumbnail::shrink_on_load(const VImage &image,
                                  const Source &source) const {
     // Try to reload input using shrink-on-load, when:
-    //  - the width or height parameters are specified.
-    //  - gamma correction doesn't need to be applied.
-    //  - trimming isn't required.
+    //  - the width or height parameters are specified
+    //  - gamma correction doesn't need to be applied
+    //  - trimming isn't required
     if (query_->get<bool>("trim", false) ||
         query_->get<float>("gam", 0.0F) != 0.0F ||
         (query_->get<int>("w") == 0 && query_->get<int>("h") == 0)) {
@@ -255,66 +281,51 @@ VImage Thumbnail::shrink_on_load(const VImage &image,
     if (image_type == ImageType::Jpeg) {
         auto shrink = resolve_jpeg_shrink(width, height);
 
-#ifdef WESERV_ENABLE_TRUE_STREAMING
-        return VImage::new_from_source(source, "",
-#else
-        return VImage::new_from_buffer(source.buffer(), "",
-#endif
-                                       load_options->set("shrink", shrink));
-    } else if (image_type == ImageType::Pdf || image_type == ImageType::Webp) {
+        return new_from_source<ImageType::Jpeg>(
+            source, load_options->set("shrink", shrink));
+    } else if (image_type == ImageType::Pdf) {
         append_page_options(load_options);
 
         auto scale =
             1.0 / resolve_common_shrink(width, utils::get_page_height(image));
 
-#ifdef WESERV_ENABLE_TRUE_STREAMING
-        return VImage::new_from_source(source, "",
-#else
-        return VImage::new_from_buffer(source.buffer(), "",
-#endif
-                                       load_options->set("scale", scale));
+        return new_from_source<ImageType::Pdf>(
+            source, load_options->set("scale", scale));
+    } else if (image_type == ImageType::Webp) {
+        append_page_options(load_options);
+
+        auto scale =
+            1.0 / resolve_common_shrink(width, utils::get_page_height(image));
+
+        // Avoid upsizing via libwebp
+        if (scale < 1.0) {
+            return new_from_source<ImageType::Webp>(
+                source, load_options->set("scale", scale));
+        }
     } else if (image_type == ImageType::Tiff) {
         auto page = resolve_tiff_pyramid(image, source, width, height);
 
         // We've found a pyramid
         if (page != -1) {
-#ifdef WESERV_ENABLE_TRUE_STREAMING
-            return VImage::new_from_source(source, "",
-#else
-            return VImage::new_from_buffer(source.buffer(), "",
-#endif
-                                           load_options->set("page", page));
+            return new_from_source<ImageType::Tiff>(
+                source, load_options->set("page", page));
         }
     /*} else if (image_type == ImageType::OpenSlide) {
         auto level = resolve_open_slide_level(image);
 
-#ifdef WESERV_ENABLE_TRUE_STREAMING
-        return VImage::new_from_source(source, "",
-#else
-        return VImage::new_from_buffer(source.buffer(), "",
-#endif
-                                       load_options->set("level", level));*/
+        return new_from_source<ImageType::OpenSlide>(
+            source, load_options->set("level", level));*/
     } else if (image_type == ImageType::Svg) {
         auto scale = 1.0 / resolve_common_shrink(width, height);
 
-#ifdef WESERV_ENABLE_TRUE_STREAMING
-        return VImage::new_from_source(source, "",
-#else
-        return VImage::new_from_buffer(source.buffer(), "",
-#endif
-                                       load_options->set("scale", scale));
+        return new_from_source<ImageType::Svg>(
+            source, load_options->set("scale", scale));
     } else if (image_type == ImageType::Heif) {
         append_page_options(load_options);
 
         // Fetch the size of the stored thumbnail
-#ifdef WESERV_ENABLE_TRUE_STREAMING
-        auto thumb =
-            VImage::new_from_source(source, "",
-#else
-        auto thumb =
-            VImage::new_from_buffer(source.buffer(), "",
-#endif
-                                    load_options->set("thumbnail", true));
+        auto thumb = new_from_source<ImageType::Heif>(
+            source, load_options->set("thumbnail", true));
 
         // Use the thumbnail if, by using it, we could get a factor > 1.0,
         // i.e. we would not need to expand the thumbnail.
@@ -325,7 +336,7 @@ VImage Thumbnail::shrink_on_load(const VImage &image,
                    : image;
     }
 
-    // Still here? The loader probably doesn't support shrink-on-load.
+    // Still here? The loader probably doesn't support shrink-on-load
 
     // Delete the options we allocated above
     delete load_options;
@@ -334,34 +345,26 @@ VImage Thumbnail::shrink_on_load(const VImage &image,
     return image;
 }
 
+// Any pre-shrinking may already have been done
 VImage Thumbnail::process(const VImage &image) const {
-    // Any pre-shrinking may already have been done
-    auto thumb = image;
-
-    // So page_height is after pre-shrink, but before the main shrink stage
-    int page_height = utils::get_page_height(thumb);
-
-    // RAD needs special unpacking.
-    if (thumb.coding() == VIPS_CODING_RAD) {
-        // rad is scRGB
-        thumb = thumb.rad2float();
-    }
-
-    // If this is a CMYK image, we only want to export at the end
-    bool is_cmyk = thumb.interpretation() == VIPS_INTERPRETATION_CMYK;
+    auto has_icc_profile = utils::has_profile(image);
 
     // To the processing colourspace. This will unpack LABQ, import CMYK
     // etc.
-    thumb = thumb.colourspace(VIPS_INTERPRETATION_sRGB);
+    auto thumb = has_icc_profile
+                     ? image  // Transformed with a pair of ICC profiles below.
+                     : image.colourspace(VIPS_INTERPRETATION_sRGB);
+
+    // So page_height is after pre-shrink, but before the main shrink stage
+    // Pre-resize extract needs to fetch the page height from the query holder
+    auto page_height =
+        query_->get<int>("page_height", utils::get_page_height(thumb));
 
     int thumb_width = thumb.width();
     int thumb_height = thumb.height();
 
-    double hshrink;
-    double vshrink;
-
     // Shrink to page_height, so we work for multi-page images
-    std::tie(hshrink, vshrink) = resolve_shrink(thumb_width, page_height);
+    auto [hshrink, vshrink] = resolve_shrink(thumb_width, page_height);
 
     auto target_width =
         static_cast<int>(std::rint(static_cast<double>(thumb_width) / hshrink));
@@ -370,7 +373,7 @@ VImage Thumbnail::process(const VImage &image) const {
     auto target_image_height = target_page_height;
 
     // In toilet-roll mode, we must adjust vshrink so that we exactly hit
-    // page_height or we'll have pixels straddling pixel boundaries.
+    // page_height, or we'll have pixels straddling pixel boundaries
     if (thumb_height > page_height) {
         auto n_pages = query_->get<int>("n");
         target_image_height *= n_pages;
@@ -389,15 +392,17 @@ VImage Thumbnail::process(const VImage &image) const {
             std::to_string(config_.limit_output_pixels));
     }
 
-    // If there's an alpha, we have to premultiply before shrinking. See
-    // https://github.com/libvips/libvips/issues/291
+    // Both .premultiply() and .unpremultiply() produces a float image, so we
+    // must cast back to the original format. Use NOTSET to mean no
+    // pre/unmultiply.
     VipsBandFormat unpremultiplied_format = VIPS_FORMAT_NOTSET;
+
+    // If there's an alpha, we have to premultiply before shrinking.
+    // See: https://github.com/libvips/libvips/issues/291
     if (thumb.has_alpha() && hshrink != 1.0 && vshrink != 1.0) {
-        // .premultiply() makes a float image. When we .unpremultiply() below,
-        // we need to cast back to the pre-premultiply format.
         unpremultiplied_format = thumb.format();
 
-        thumb = thumb.premultiply();
+        thumb = thumb.premultiply().cast(unpremultiplied_format);
     }
 
     thumb = thumb.resize(1.0 / hshrink,
@@ -410,26 +415,24 @@ VImage Thumbnail::process(const VImage &image) const {
     }
 
     // Colour management.
-    // If this is a CMYK image, just export. Otherwise, we're in
-    // device space and we need a combined import/export to transform to
-    // the target space.
-    if (is_cmyk) {
-        thumb = thumb.icc_export(VImage::option()
-                                     ->set("output_profile", "srgb")
-                                     ->set("intent", VIPS_INTENT_PERCEPTUAL));
-    } else if (utils::has_profile(thumb)) {
+    if (has_icc_profile) {
+        // Ensure images with P3 profiles retain full gamut.
+        const char *processing_profile =
+            image.interpretation() == VIPS_INTERPRETATION_RGB16 ? "p3" : "srgb";
+
+        // If there's some kind of import profile, we can transform to the
+        // output.
         thumb = thumb.icc_transform(
-            "srgb", VImage::option()
-                        // Fallback to srgb
-                        ->set("input_profile", "srgb")
-                        // Use "perceptual" intent to better match imagemagick
-                        ->set("intent", VIPS_INTENT_PERCEPTUAL)
-                        ->set("embedded", true));
+            processing_profile,
+            VImage::option()
+                ->set("embedded", true)
+                ->set("depth",
+                      utils::is_16_bit(image.interpretation()) ? 16 : 8)
+                // Use "perceptual" intent to better match *magick
+                ->set("intent", VIPS_INTENT_PERCEPTUAL));
     }
 
     return thumb;
 }
 
-}  // namespace processors
-}  // namespace api
-}  // namespace weserv
+}  // namespace weserv::api::processors

@@ -26,13 +26,14 @@
 #include "processors/tint.h"
 #include "processors/trim.h"
 
+#include "utils/utility.h"
+
 #include <exception>
 #include <utility>
 
 #include <vips/vips8>
 
-namespace weserv {
-namespace api {
+namespace weserv::api {
 
 using io::Source;
 using io::Target;
@@ -41,7 +42,7 @@ using vips::VError;
 
 std::shared_ptr<ApiManager>
 ApiManagerFactory::create_api_manager(std::unique_ptr<ApiEnvInterface> env) {
-    return std::shared_ptr<ApiManager>(new ApiManagerImpl(std::move(env)));
+    return std::make_shared<ApiManagerImpl>(std::move(env));
 }
 
 /**
@@ -53,7 +54,7 @@ ApiManagerFactory::create_api_manager(std::unique_ptr<ApiEnvInterface> env) {
  */
 void vips_warning_callback(const char * /*unused*/, GLogLevelFlags /*unused*/,
                            const char *message, void *user_data) {
-    auto env = static_cast<ApiEnvInterface *>(user_data);
+    auto *env = static_cast<ApiEnvInterface *>(user_data);
 
     // Log libvips warnings
     env->log_warning("libvips warning: " + std::string(message));
@@ -66,20 +67,18 @@ ApiManagerImpl::ApiManagerImpl(std::unique_ptr<ApiEnvInterface> env)
         // Disable the libvips cache -- it won't help and will just burn memory
         vips_cache_set_max(0);
 
-#if VIPS_VERSION_AT_LEAST(8, 10, 0)
         // We limit the pipe within the nginx module
         vips_pipe_read_limit_set(-1);
-#endif
 
-        handler_id_ = g_log_set_handler(
-            "VIPS", static_cast<GLogLevelFlags>(G_LOG_LEVEL_WARNING),
-            static_cast<GLogFunc>(vips_warning_callback), env_.get());
+        handler_id_ = g_log_set_handler("VIPS", G_LOG_LEVEL_WARNING,
+                                        vips_warning_callback, env_.get());
     } else {  // LCOV_EXCL_START
         std::string error(vips_error_buffer());
         vips_error_clear();
 
         env_->log_error("error: Unable to start up libvips: " + error);
-    }  // LCOV_EXCL_STOP
+        // LCOV_EXCL_STOP
+    }
 }
 
 ApiManagerImpl::~ApiManagerImpl() {
@@ -104,24 +103,23 @@ Status ApiManagerImpl::exception_handler(const std::string &query) {
         env_->log_info("Stream contains unsupported image format. Cause: " +
                        std::string(e.what()) + "\nQuery: " + query);
 
-        return Status(
-            Status::Code::InvalidImage,
-            "Invalid or unsupported image format. Is it a valid image?",
-            Status::ErrorCause::Application);
+        return {Status::Code::InvalidImage,
+                "Invalid or unsupported image format. Is it a valid image?",
+                Status::ErrorCause::Application};
     } catch (const exceptions::UnreadableImageException &e) {
         // Log image not readable errors
         env_->log_error("Image has a corrupt header. Cause: " +
                         std::string(e.what()) + "\nQuery: " + query);
 
-        return Status(Status::Code::ImageNotReadable,
-                      "Image not readable. Is it a valid image?",
-                      Status::ErrorCause::Application);
+        return {Status::Code::ImageNotReadable,
+                "Image not readable. Is it a valid image?",
+                Status::ErrorCause::Application};
     } catch (const exceptions::TooLargeImageException &e) {
-        return Status(Status::Code::ImageTooLarge, e.what(),
-                      Status::ErrorCause::Application);
+        return {Status::Code::ImageTooLarge, e.what(),
+                Status::ErrorCause::Application};
     } catch (const exceptions::UnsupportedSaverException &e) {
-        return Status(Status::Code::UnsupportedSaver, e.what(),
-                      Status::ErrorCause::Application);
+        return {Status::Code::UnsupportedSaver, e.what(),
+                Status::ErrorCause::Application};
     } catch (const VError &e) {
         std::string error_str = e.what();
 
@@ -133,26 +131,26 @@ Status ApiManagerImpl::exception_handler(const std::string &query) {
             error_str = error_str.substr(8, error_str.find('\n') - 8);
         }
 
-        return Status(Status::Code::LibvipsError,
-                      "libvips error: " + utils::escape_string(error_str),
-                      Status::ErrorCause::Application);
+        return {Status::Code::LibvipsError,
+                "libvips error: " + utils::escape_string(error_str),
+                Status::ErrorCause::Application};
     } catch (const std::exception &e) {  // LCOV_EXCL_START
         auto error_str = "unknown error: " + std::string(e.what());
 
         // Log unknown errors
         env_->log_error(error_str + "\nQuery: " + query);
 
-        return Status(Status::Code::Unknown, error_str,
-                      Status::ErrorCause::Application);
+        return {Status::Code::Unknown, error_str,
+                Status::ErrorCause::Application};
+        // LCOV_EXCL_STOP
     }
-    // LCOV_EXCL_STOP
 }
 
-utils::Status ApiManagerImpl::process(const std::string &query,
-                                      const Source &source,
-                                      const Target &target,
-                                      const Config &config) {
-    auto query_holder = std::make_shared<parsers::Query>(query, config);
+Status ApiManagerImpl::process(const std::string &query,
+                               const Source &source,
+                               const Target &target,
+                               const Config &config) {
+    auto query_holder = std::make_unique<parsers::Query>(query);
 
     // Note: the disadvantage of pre-resize extraction behaviour is that none
     // of the very fast shrink-on-load tricks are possible. This can make
@@ -163,23 +161,23 @@ utils::Status ApiManagerImpl::process(const std::string &query,
     auto stream = processors::Stream(query_holder, config);
 
     // Image processors
-    auto trim = processors::Trim(query_holder);
+    auto trim = processors::Trim(query_holder, config);
     auto thumbnail = processors::Thumbnail(query_holder, config);
     auto orientation = processors::Orientation(query_holder, config);
     auto alignment = processors::Alignment(query_holder, config);
-    auto crop = processors::Crop(query_holder);
-    auto embed = processors::Embed(query_holder);
+    auto crop = processors::Crop(query_holder, config);
+    auto embed = processors::Embed(query_holder, config);
     auto rotation = processors::Rotation(query_holder, config);
-    auto brightness = processors::Brightness(query_holder);
-    auto modulate = processors::Modulate(query_holder);
-    auto contrast = processors::Contrast(query_holder);
-    auto gamma = processors::Gamma(query_holder);
-    auto sharpen = processors::Sharpen(query_holder);
-    auto filter = processors::Filter(query_holder);
-    auto blur = processors::Blur(query_holder);
-    auto tint = processors::Tint(query_holder);
-    auto background = processors::Background(query_holder);
-    auto mask = processors::Mask(query_holder);
+    auto brightness = processors::Brightness(query_holder, config);
+    auto modulate = processors::Modulate(query_holder, config);
+    auto contrast = processors::Contrast(query_holder, config);
+    auto gamma = processors::Gamma(query_holder, config);
+    auto sharpen = processors::Sharpen(query_holder, config);
+    auto filter = processors::Filter(query_holder, config);
+    auto blur = processors::Blur(query_holder, config);
+    auto tint = processors::Tint(query_holder, config);
+    auto background = processors::Background(query_holder, config);
+    auto mask = processors::Mask(query_holder, config);
 
     // Create image from a source
     auto image = stream.new_from_source(source);
@@ -209,24 +207,24 @@ utils::Status ApiManagerImpl::process(const std::string &query,
     return Status::OK;
 }
 
-utils::Status
+Status
 ApiManagerImpl::process(const std::string &query,
-                        std::unique_ptr<io::SourceInterface> source,
-                        std::unique_ptr<io::TargetInterface> target,
+                        const std::unique_ptr<io::SourceInterface> &source,
+                        const std::unique_ptr<io::TargetInterface> &target,
                         const Config &config) {
     try {
-        return process(query, Source::new_from_pointer(std::move(source)),
-                       Target::new_to_pointer(std::move(target)), config);
+        return process(query, Source::new_from_pointer(source),
+                       Target::new_to_pointer(target), config);
     } catch (...) {
         // We'll pass the query string for debugging purposes
         return exception_handler(query);
     }
 }
 
-utils::Status ApiManagerImpl::process_file(const std::string &query,
-                                           const std::string &in_file,
-                                           const std::string &out_file,
-                                           const Config &config) {
+Status ApiManagerImpl::process_file(const std::string &query,
+                                    const std::string &in_file,
+                                    const std::string &out_file,
+                                    const Config &config) {
     try {
         return process(query, Source::new_from_file(in_file),
                        Target::new_to_file(out_file), config);
@@ -235,26 +233,20 @@ utils::Status ApiManagerImpl::process_file(const std::string &query,
     }
 }
 
-utils::Status ApiManagerImpl::process_file(const std::string &query,
-                                           const std::string &in_file,
-                                           std::string *out_buf,
-                                           const Config &config) {
+Status ApiManagerImpl::process_file(const std::string &query,
+                                    const std::string &in_file,
+                                    std::string *out_buf,
+                                    const Config &config) {
     try {
-#ifdef WESERV_ENABLE_TRUE_STREAMING
         auto target = Target::new_to_memory();
-#else
-        auto target = Target::new_to_memory(out_buf);
-#endif
         Status status =
             process(query, Source::new_from_file(in_file), target, config);
 
-#ifdef WESERV_ENABLE_TRUE_STREAMING
         if (status.ok() && out_buf != nullptr) {
             size_t length;
             const void *out = vips_blob_get(target.get_target()->blob, &length);
             out_buf->assign(static_cast<const char *>(out), length);
         }
-#endif
 
         return status;
     } catch (...) {
@@ -262,31 +254,24 @@ utils::Status ApiManagerImpl::process_file(const std::string &query,
     }
 }
 
-utils::Status ApiManagerImpl::process_buffer(const std::string &query,
-                                             const std::string &in_buf,
-                                             std::string *out_buf,
-                                             const Config &config) {
+Status ApiManagerImpl::process_buffer(const std::string &query,
+                                      const std::string &in_buf,
+                                      std::string *out_buf,
+                                      const Config &config) {
     try {
-#ifdef WESERV_ENABLE_TRUE_STREAMING
         auto target = Target::new_to_memory();
-#else
-        auto target = Target::new_to_memory(out_buf);
-#endif
         Status status =
             process(query, Source::new_from_buffer(in_buf), target, config);
 
-#ifdef WESERV_ENABLE_TRUE_STREAMING
         if (status.ok() && out_buf != nullptr) {
             size_t length;
             const void *out = vips_blob_get(target.get_target()->blob, &length);
             out_buf->assign(static_cast<const char *>(out), length);
         }
-#endif
         return status;
     } catch (...) {
         return exception_handler(query);
     }
 }
 
-}  // namespace api
-}  // namespace weserv
+}  // namespace weserv::api

@@ -9,27 +9,28 @@ extern "C" {
 #include <weserv/io/source_interface.h>
 #include <weserv/io/target_interface.h>
 
-namespace weserv {
-namespace nginx {
+namespace weserv::nginx {
 
 /**
  * The NGINX implementation of io::SourceInterface.
  */
 class NgxSource : public api::io::SourceInterface {
  public:
-    NgxSource(ngx_chain_t *in) : in_(in) {}
+    NgxSource(u_char *data, int64_t length) : data_(data), length_(length) {}
 
     ~NgxSource() override = default;
 
     int64_t read(void *data, size_t length) override;
 
-    int64_t seek(int64_t /* unsused */, int /* unsused */) override {
-        // NGINX sources are not seekable
-        return -1;
-    }
+    int64_t seek(int64_t offset, int whence) override;
 
  private:
-    ngx_chain_t *in_;
+    u_char *data_;
+    int64_t length_;
+
+    /* The current read point.
+     */
+    int64_t read_position_ = 0;
 };
 
 /**
@@ -37,9 +38,10 @@ class NgxSource : public api::io::SourceInterface {
  */
 class NgxTarget : public api::io::TargetInterface {
  public:
-    NgxTarget(ngx_weserv_upstream_ctx_t *upstream_ctx, ngx_http_request_t *r,
+    NgxTarget(ngx_http_request_t *r, ngx_weserv_upstream_ctx_t *upstream_ctx,
               ngx_chain_t **out)
-        : upstream_ctx_(upstream_ctx), r_(r), ll_(out) {}
+        : r_(r), upstream_ctx_(upstream_ctx), ll_(out), first_ll_(out),
+          seek_cl_(*out) {}
 
     ~NgxTarget() override = default;
 
@@ -47,16 +49,26 @@ class NgxTarget : public api::io::TargetInterface {
 
     int64_t write(const void *data, size_t length) override;
 
-    void finish() override;
+    int64_t read(void *data, size_t length) override;
+
+    int64_t seek(int64_t offset, int whence) override;
+
+    int end() override;
 
  private:
-    ngx_weserv_upstream_ctx_t *upstream_ctx_;
     ngx_http_request_t *r_;
+    ngx_weserv_upstream_ctx_t *upstream_ctx_;
     ngx_chain_t **ll_;
+    ngx_chain_t **first_ll_;
+
+    ngx_chain_t *seek_cl_;
 
     std::string extension_;
     off_t content_length_ = 0;
+
+    /* The current write point.
+     */
+    int64_t write_position_ = 0;
 };
 
-}  // namespace nginx
-}  // namespace weserv
+}  // namespace weserv::nginx

@@ -1,12 +1,13 @@
-# Install instructions (for CentOS 8)
+# Install instructions (for RHEL 9, and its derivatives)
 
 ## Build dependencies
 
- * `cmake` >= 3.11
- * `g++` => 5.0
- * `libpcre3` (for nginx rewrite module)
- * `openssl` (for nginx ssl support)
- * `libvips` >= 8.9
+ * `cmake` >= 3.11 (for `FetchContent` module)
+ * `g++` >= 5.0 (for `-std=c++17` support)
+ * `pcre2` (for nginx rewrite module)
+ * `zlib` (for nginx gzip module)
+ * `openssl` (for SSL support)
+ * `libvips` >= 8.12
 
 ## Install instructions
 
@@ -14,22 +15,19 @@
 # Install the EPEL repository configuration package
 dnf install epel-release
 
+# Enable the CodeReady Builder repository since EPEL packages may depend on packages from it
+crb enable
+
 # Install the Remi repository configuration package
-dnf install https://rpms.remirepo.net/enterprise/remi-release-8.rpm
+dnf install https://rpms.remirepo.net/enterprise/remi-release-9.rpm
 
 # Install the RPM Fusion repository configuration package (for libheif)
-dnf install --nogpgcheck https://download1.rpmfusion.org/free/el/rpmfusion-free-release-8.noarch.rpm
-
-# Install the dnf-utils package (for the dnf config-manager command)
-dnf install dnf-utils
+dnf install --nogpgcheck https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm
 
 # Enable Remi's RPM repository
 dnf config-manager --set-enabled remi
 
-# Enable the PowerTools repository since EPEL packages may depend on packages from it
-dnf config-manager --set-enabled PowerTools
-
-# Install libvips 8.11 (full-fat version)
+# Install libvips 8.15 (full-fat version)
 dnf install vips-devel vips-heif vips-magick-im6
 
 # Install build requirements
@@ -44,7 +42,7 @@ dnf install \
   glibc-devel \
   glibc-headers \
   openssl-devel \
-  pcre-devel \
+  pcre2-devel \
   zlib-devel
 ```
 
