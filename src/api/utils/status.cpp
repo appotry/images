@@ -3,9 +3,7 @@
 #include <sstream>
 #include <utility>
 
-namespace weserv {
-namespace api {
-namespace utils {
+namespace weserv::api::utils {
 
 Status::Status(int code, std::string message, ErrorCause error_cause)
     : code_(code), message_(std::move(message)), error_cause_(error_cause) {}
@@ -15,8 +13,7 @@ Status::Status(int code, const std::string &message)
 
 Status::Status() : Status(200, "", ErrorCause::Internal) {}
 
-Status::Status(Status::Code code, std::string message,
-               Status::ErrorCause error_cause)
+Status::Status(Code code, std::string message, ErrorCause error_cause)
     : Status(static_cast<int>(code), std::move(message), error_cause) {}
 
 bool Status::operator==(const Status &x) const {
@@ -119,11 +116,11 @@ std::string Status::to_json() const {
             case ErrorCause::Upstream:
                 if (code_ == 408 || code_ == 504) {
                     // Request or gateway timeout
-                    http_out << "The requested URL timed out.";
+                    http_out << "The requested URL timed out";
                 } else if (code_ == 502) {
-                    // DNS unresolvable or blocked by policy
+                    // DNS unresolvable
                     http_out << "The hostname of the origin is unresolvable "
-                                "(DNS) or blocked by policy.";
+                                "(DNS)";
                 } else if ((code_ == 310 || code_ == 413) &&
                            !message_.empty()) {
                     http_out << message_;
@@ -131,7 +128,7 @@ std::string Status::to_json() const {
                     http_out << "The requested URL returned error: " << code_;
                 }
                 break;
-            case Status::ErrorCause::Application:
+            case ErrorCause::Application:
             default:
                 if (!message_.empty()) {
                     http_out << message_;
@@ -147,6 +144,4 @@ std::string Status::to_json() const {
     return http_out.str();
 }
 
-}  // namespace utils
-}  // namespace api
-}  // namespace weserv
+}  // namespace weserv::api::utils

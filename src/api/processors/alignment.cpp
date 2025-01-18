@@ -6,9 +6,7 @@
 #include <algorithm>
 #include <tuple>
 
-namespace weserv {
-namespace api {
-namespace processors {
+namespace weserv::api::processors {
 
 using enums::Canvas;
 using enums::Position;
@@ -19,8 +17,12 @@ VImage Alignment::process(const VImage &image) const {
         return image;
     }
 
+    auto n_pages = query_->get<int>("n");
+
     int image_width = image.width();
-    int image_height = image.height();
+    int image_height =
+        n_pages > 1 ? query_->get<int>("page_height") : image.height();
+
     auto width = query_->get_if<int>(
         "w",
         [&image_width](int w) {
@@ -46,20 +48,13 @@ VImage Alignment::process(const VImage &image) const {
     auto crop_width = std::min(image_width, width);
     auto crop_height = std::min(image_height, height);
 
-    auto n_pages = query_->get<int>("n");
-
     // Skip smart crop for multi-page images
     if (n_pages == 1 && (crop_position == Position::Entropy ||
                          crop_position == Position::Attention)) {
-        // Copy to memory evaluates the image, so set up the timeout handler,
-        // if necessary.
-        utils::setup_timeout_handler(image, config_.process_timeout);
-
-        // Need to copy to memory, we have to stay seq
-        return image.copy_memory().smartcrop(
-            crop_width, crop_height,
-            VImage::option()->set("interesting",
-                                  static_cast<int>(crop_position)));
+        return utils::stay_sequential(image, config_.process_timeout)
+            .smartcrop(crop_width, crop_height,
+                       VImage::option()->set("interesting",
+                                             static_cast<int>(crop_position)));
     }
 
     int left;
@@ -81,15 +76,16 @@ VImage Alignment::process(const VImage &image) const {
             width, height, image_width, image_height, crop_position);
     }
 
-    // Leave the height unchanged in toilet-roll mode
     if (n_pages > 1) {
-        top = 0;
-        crop_height = image_height;
+        // Update the page height
+        query_->update("page_height", crop_height);
+
+        return utils::crop_multi_page(image, config_.process_timeout, left, top,
+                                      crop_width, crop_height, n_pages,
+                                      image_height);
     }
 
     return image.extract_area(left, top, crop_width, crop_height);
 }
 
-}  // namespace processors
-}  // namespace api
-}  // namespace weserv
+}  // namespace weserv::api::processors

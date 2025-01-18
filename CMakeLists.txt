@@ -1,5 +1,5 @@
-# Note: The FetchContent module was added in CMake 3.11
-cmake_minimum_required(VERSION 3.11)
+# Note: FetchContent_MakeAvailable was added in CMake 3.14
+cmake_minimum_required(VERSION 3.14)
 
 project(weserv
         VERSION 5.0.0
@@ -28,13 +28,14 @@ if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build." FORCE)
 endif()
 
-# Let's enable C++11
-set(CMAKE_CXX_STANDARD 11)
+# Let's enable C++17
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Coverage flags
 if (ENABLE_COVERAGE)
-    set(CMAKE_CXX_FLAGS_DEBUG "--coverage -g -O0")
+    set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g --coverage")
     set(CMAKE_EXE_LINKER_FLAGS "--coverage")
 elseif (CMAKE_COMPILER_IS_GNUCXX)
     # Compiler flags
@@ -69,20 +70,11 @@ include(FetchContent)
 include(GNUInstallDirs)
 
 # Find Catch2 (optional)
-find_package(Catch2 2.7.1 QUIET)
-
-# Find mpark/variant (optional)
-# TODO(kleisauke): Can't set 1.4.0 as minimum version, see: https://github.com/mpark/variant/issues/60
-find_package(mpark_variant 1.3.0 QUIET)
+find_package(Catch2 3.0.1 QUIET)
 
 # Find libvips (required)
 find_package(PkgConfig)
-pkg_check_modules(VIPS vips-cpp>=8.9 REQUIRED)
-
-# Build mpark/variant (an implementation of C++17 std::variant for C++11/14/17), if necessary
-if (NOT mpark_variant_FOUND)
-    add_subdirectory(third_party/variant)
-endif()
+pkg_check_modules(VIPS vips-cpp>=8.12 REQUIRED)
 
 # Create the shared API library
 add_subdirectory(src/api)
@@ -94,7 +86,7 @@ endif()
 if (BUILD_TESTS)
     enable_testing()
 
-    # Build Catch2 (a header-only test framework), if necessary
+    # Build Catch2 (a modern test framework), if necessary
     if (NOT Catch2_FOUND)
         add_subdirectory(third_party/catch2)
     endif()
@@ -105,12 +97,6 @@ endif()
 # Install nginx along with the nginx weserv module, if necessary
 if (INSTALL_NGX_MODULE)
     add_subdirectory(third_party/rate-limit-nginx-module)
-
-    # Install the echo module only in debug builds
-    # (needed by the integration tests)
-    if (CMAKE_BUILD_TYPE MATCHES "Debug")
-        add_subdirectory(third_party/echo-nginx-module)
-    endif()
 
     add_subdirectory(third_party/nginx)
 endif()

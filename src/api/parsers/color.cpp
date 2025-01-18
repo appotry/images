@@ -6,9 +6,7 @@
 #include <iomanip>
 #include <sstream>
 
-namespace weserv {
-namespace api {
-namespace parsers {
+namespace weserv::api::parsers {
 
 // clang-format off
 const ColorMap &color_map = {
@@ -219,7 +217,7 @@ Color parse(const std::string &value) {
     auto color = value.rfind("%23", 0) == 0 ? value.substr(3) : value;
 
     // Make sure that the string is lowercased
-    std::transform(color.begin(), color.end(), color.begin(), &::tolower);
+    std::transform(color.begin(), color.end(), color.begin(), &tolower);
 
     auto it = color_map.find(color);
 
@@ -289,6 +287,4 @@ Color parse(const std::string &value) {
     return {a, r, g, b};
 }
 
-}  // namespace parsers
-}  // namespace api
-}  // namespace weserv
+}  // namespace weserv::api::parsers

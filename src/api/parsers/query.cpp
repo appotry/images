@@ -6,9 +6,7 @@
 
 #include <weserv/enums.h>
 
-namespace weserv {
-namespace api {
-namespace parsers {
+namespace weserv::api::parsers {
 
 using enums::Canvas;
 using enums::FilterType;
@@ -16,26 +14,26 @@ using enums::MaskType;
 using enums::Output;
 using enums::Position;
 
-// `&[precrop]=true`
-constexpr size_t MAX_KEY_LENGTH = sizeof("precrop") - 1;
+// `&[lossless]=true`
+constexpr size_t MAX_KEY_LENGTH = sizeof("lossless") - 1;
 
-// A vector must not have more than 65536 elements.
-const size_t MAX_VECTOR_SIZE = 65536;
+// A vector must not have more than 10000 elements.
+constexpr size_t MAX_VECTOR_SIZE = 10000;
 
 // Note: We check crazy numbers within `numeric.h`
 
 // clang-format off
 const TypeMap &type_map = {
-    {"w",       typeid(int)},
-    {"h",       typeid(int)},
+    {"w",       typeid(Coordinate)},
+    {"h",       typeid(Coordinate)},
     {"dpr",     typeid(float)},
     {"fit",     typeid(Canvas)},
     {"we",      typeid(bool)},
     {"crop",    typeid(std::vector<int>)},  // Deprecated
-    {"cx",      typeid(int)},
-    {"cy",      typeid(int)},
-    {"cw",      typeid(int)},
-    {"ch",      typeid(int)},
+    {"cx",      typeid(Coordinate)},
+    {"cy",      typeid(Coordinate)},
+    {"cw",      typeid(Coordinate)},
+    {"ch",      typeid(Coordinate)},
     {"precrop", typeid(bool)},
     {"a",       typeid(Position)},
     {"fpx",     typeid(float)},
@@ -68,6 +66,7 @@ const TypeMap &type_map = {
     {"l",       typeid(int)},
     {"output",  typeid(Output)},
     {"il",      typeid(bool)},
+    {"ll",      typeid(bool)},              // TODO(kleisauke): Documentation needed.
     {"af",      typeid(bool)},
     {"page",    typeid(int)},
     {"n",       typeid(int)},
@@ -77,19 +76,20 @@ const TypeMap &type_map = {
 };
 
 const SynonymMap &synonym_map = {
-    {"shape",   "mask"},   // &shape= was deprecated since API version 4
-    {"strim",   "mtrim"},  // &strim= was deprecated since API version 4
-    {"or",      "ro"},     // &or= was deprecated since API version 5
-    {"t",       "fit"},    // &t= was deprecated since API version 5
+    {"shape",    "mask"},   // &shape= was deprecated since API version 4
+    {"strim",    "mtrim"},  // &strim= was deprecated since API version 4
+    {"or",       "ro"},     // &or= was deprecated since API version 5
+    {"t",        "fit"},    // &t= was deprecated since API version 5
     // TODO(kleisauke): Synonym this within a major release (since it breaks BC).
-    //{"bri",     "mod"},
+    //{"bri",      "mod"},
     // Some handy synonyms
-    {"pages",   "n"},
-    {"width",   "w"},
-    {"height",  "h"},
-    {"align",   "a"},
-    {"level",   "l"},
-    {"quality", "q"},
+    {"pages",    "n"},
+    {"width",    "w"},
+    {"height",   "h"},
+    {"align",    "a"},
+    {"level",    "l"},
+    {"quality",  "q"},
+    {"lossless", "ll"},
 };
 
 const NginxKeySet &nginx_keys = {
@@ -143,7 +143,7 @@ void Query::add_value(const std::string &key, const std::string &value,
                       std::type_index type) {
     if (type == typeid(bool)) {
         // Only emplace `false` if it's explicitly specified because we
-        // interpret empty strings (for e.g. `&we`) as `true`.
+        // interpret empty strings (for e.g. `&we`) as `true`
         query_map_.emplace(key, value != "false" && value != "0");
     } else if (type == typeid(int)) {
         try {
@@ -159,6 +159,8 @@ void Query::add_value(const std::string &key, const std::string &value,
             // -1.0 by default
             query_map_.emplace(key, -1.0F);
         }
+    } else if (type == typeid(Coordinate)) {
+        query_map_.emplace(key, parse<Coordinate>(value));
     } else if (type == typeid(Position)) {
         auto position = parse<Position>(value);
 
@@ -200,11 +202,7 @@ void Query::add_value(const std::string &key, const std::string &value,
     } else if (type == typeid(Color)) {
         query_map_.emplace(key, parse<Color>(value));
     } else if (key == "delay") {  // type == typeid(std::vector<int>)
-        // Limit to config_.max_pages
-        auto delays = tokenize<int>(value, ",",
-                                    config_.max_pages > 0
-                                        ? static_cast<size_t>(config_.max_pages)
-                                        : MAX_VECTOR_SIZE);
+        auto delays = tokenize<int>(value, ",", MAX_VECTOR_SIZE);
         query_map_.emplace(key, delays);
     } else if (key == "sharp") {  // type == typeid(std::vector<float>)
         auto params = tokenize<float>(value, ",", 3);
@@ -227,7 +225,7 @@ void Query::add_value(const std::string &key, const std::string &value,
         std::vector<std::string> keys = {/*"bri"*/key, "sat", "hue"};
 
         for (size_t i = 0; i != params.size(); ++i) {
-            /*keys[i] == "hue"*/ i == 2  // Hue needs to be casted to a integer
+            /*keys[i] == "hue"*/ i == 2  // Hue needs to be cast to an integer
                 ? query_map_.emplace(keys[i], static_cast<int>(params[i]))
                 : query_map_.emplace(keys[i], params[i]);
         }
@@ -235,34 +233,32 @@ void Query::add_value(const std::string &key, const std::string &value,
         auto coordinates = tokenize<int>(value, ",", 4);
 
         if (coordinates.size() == 4) {
-            query_map_.emplace("cw", coordinates[0]);
-            query_map_.emplace("ch", coordinates[1]);
-            query_map_.emplace("cx", coordinates[2]);
-            query_map_.emplace("cy", coordinates[3]);
+            query_map_.emplace("cw", Coordinate{coordinates[0]});
+            query_map_.emplace("ch", Coordinate{coordinates[1]});
+            query_map_.emplace("cx", Coordinate{coordinates[2]});
+            query_map_.emplace("cy", Coordinate{coordinates[3]});
         }
     }
 }
 
-Query::Query(const std::string &value, const Config &config) : config_(config) {
-    size_t begin = 0;
-    size_t end;
-
+Query::Query(const std::string &value) {
+    size_t pos = 0;
     size_t max_pos = value.size();
 
-    while (begin < max_pos) {
+    while (pos < max_pos) {
         // Search key
-        end = value.find_first_of("=&", begin);
+        size_t end = value.find_first_of("=&", pos);
         if (end == std::string::npos) {
             end = max_pos;
         }
 
-        std::string key = value.substr(begin, end - begin);
+        std::string key = value.substr(pos, end - pos);
 
         // Skip empty, invalid, or keys already handled in the nginx module
         if (key.empty() || key.size() > MAX_KEY_LENGTH ||
             nginx_keys.find(key) != nginx_keys.end()) {
-            end = value.find('&', end + 1);
-            begin = end == std::string::npos ? max_pos : end + 1;
+            end = value.find('&', end);
+            pos = end == std::string::npos ? max_pos : end + 1;
             continue;
         }
 
@@ -280,19 +276,19 @@ Query::Query(const std::string &value, const Config &config) : config_(config) {
 
             // Handle optional value
             if (end < max_pos && value.at(end) == '=') {
-                begin = end + 1;
-                end = value.find('&', begin);
+                pos = end + 1;
+                end = value.find('&', pos);
 
-                val = value.substr(begin, end - begin);
+                val = value.substr(pos, end - pos);
             }
 
             add_value(key, val, type_it->second);
+        } else {
+            end = value.find('&', end);
         }
 
-        begin = end == std::string::npos ? max_pos : end + 1;
+        pos = end == std::string::npos ? max_pos : end + 1;
     }
 }
 
-}  // namespace parsers
-}  // namespace api
-}  // namespace weserv
+}  // namespace weserv::api::parsers

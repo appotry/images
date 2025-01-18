@@ -1,4 +1,4 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include "../base.h"
 #include "../similar_image.h"
@@ -187,6 +187,25 @@ TEST_CASE("mask", "[mask]") {
 
         CHECK(image.width() == 320);
         CHECK(image.height() == 240);
+
+        CHECK_THAT(image, is_similar_image(expected_image));
+    }
+
+    SECTION("animated image") {
+        if (vips_type_find("VipsOperation", "gifload_buffer") == 0 ||
+            vips_type_find("VipsOperation", "gifsave_buffer") == 0) {
+            SUCCEED("no gif support, skipping test");
+            return;
+        }
+
+        auto test_image = fixtures->input_gif_animated;
+        auto expected_image = fixtures->expected_dir + "/mask-star-anim.gif";
+        auto params = "n=-1&w=300&h=300&fit=cover&mask=star&mbg=red&mtrim=true";
+
+        VImage image = process_file<VImage>(test_image, params);
+
+        CHECK(image.width() == 300);
+        CHECK(vips_image_get_page_height(image.get_image()) == 285);
 
         CHECK_THAT(image, is_similar_image(expected_image));
     }
