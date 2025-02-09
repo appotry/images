@@ -2,15 +2,20 @@
 
 use Test::Nginx::Socket;
 use Test::Nginx::Util qw($ServerPort $ServerAddr);
+use IO::Compress::Gzip qw(gzip);
 
-plan tests => repeat_each() * (blocks() * 5);
+plan tests => repeat_each() * (blocks() * 6 - 1);
 
 $ENV{TEST_NGINX_HTML_DIR} ||= html_dir();
 $ENV{TEST_NGINX_URI} = "http://$ServerAddr:$ServerPort";
+$ENV{TEST_NGINX_SVG} = '<svg viewBox="0 0 1 1"></svg>';
 
 our $HttpConfig = qq{
     error_log logs/error.log debug;
 };
+
+our $TestSvgGzip;
+gzip \$ENV{TEST_NGINX_SVG} => \$TestSvgGzip;
 
 no_long_string();
 #no_diff();
@@ -77,8 +82,8 @@ Content-Type: application/json
     error_log logs/error.log debug;
 
     map $http_user_agent $is_weserv {
-        default                        0;
-        "~*\+http://images.weserv.nl/" 1;
+        default               0;
+        "~*\+http://wsrv.nl/" 1;
     }
 --- config
     location /user_agent {
@@ -91,7 +96,7 @@ Content-Type: application/json
 
     location /images {
         weserv proxy;
-        weserv_user_agent "Mozilla/5.0 (compatible; ImageFetcher/9.0; +http://images.weserv.nl/)";
+        weserv_user_agent "Mozilla/5.0 (compatible; ImageFetcher/9.0; +http://wsrv.nl/)";
     }
 --- request eval
 "GET /images?url=$ENV{TEST_NGINX_URI}/user_agent"
@@ -144,9 +149,8 @@ Content-Type: application/json
 --- http_config eval: $::HttpConfig
 --- config
     location /chunked {
-        default_type image/svg+xml;
-        chunked_transfer_encoding on;
-        echo '<svg viewBox="0 0 1 1"></svg>';
+        proxy_buffering off;
+        proxy_pass http://unix:proxy_test.sock;
     }
 
     location /images {
@@ -154,9 +158,46 @@ Content-Type: application/json
     }
 --- request eval
 "GET /images?url=$ENV{TEST_NGINX_URI}/chunked&output=json"
+--- tcp_listen: proxy_test.sock
+--- tcp_no_close
+--- tcp_reply eval
+sub {
+    return ["HTTP/1.1 200 OK\r\n",
+            "Transfer-Encoding: chunked\r\n",
+            "\r\n",
+            sprintf("%x", length $ENV{TEST_NGINX_SVG}) . "\r\n",
+            $ENV{TEST_NGINX_SVG} . "\r\n",
+            "0\r\n",
+            "\r\n"];
+}
 --- response_headers
 Content-Type: application/json
 --- response_body_like: ^.*"format":"svg","width":1,"height":1,.*$
+--- no_error_log
+[error]
+[warn]
+
+
+=== TEST 6: gzip-compressed SVG
+--- http_config eval: $::HttpConfig
+--- config
+    location /gzip {
+        add_header Content-Encoding 'gzip';
+        alias $TEST_NGINX_HTML_DIR;
+    }
+
+    location /images {
+        weserv proxy;
+    }
+--- user_files eval
+">>> test.svgz
+$::TestSvgGzip"
+--- request eval
+['GET /gzip/test.svgz', "GET /images?url=$ENV{TEST_NGINX_URI}/gzip/test.svgz&output=json"]
+--- response_headers eval
+['Content-Encoding: gzip', 'Content-Type: application/json']
+--- response_body_like eval
+['^\037\213', '^.*"format":"svg","width":1,"height":1,.*$']
 --- no_error_log
 [error]
 [warn]

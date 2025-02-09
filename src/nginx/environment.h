@@ -6,15 +6,14 @@ extern "C" {
 
 #include <weserv/env_interface.h>
 
-namespace weserv {
-namespace nginx {
+namespace weserv::nginx {
 
 /**
  * The NGINX implementation of ApiEnvInterface.
  */
 class NgxEnvironment : public api::ApiEnvInterface {
  public:
-    NgxEnvironment(ngx_log_t *log) : log_(log) {}
+    explicit NgxEnvironment(ngx_log_t *log) : log_(log) {}
 
     ~NgxEnvironment() override = default;
 
@@ -24,5 +23,4 @@ class NgxEnvironment : public api::ApiEnvInterface {
     ngx_log_t *log_;
 };
 
-}  // namespace nginx
-}  // namespace weserv
+}  // namespace weserv::nginx

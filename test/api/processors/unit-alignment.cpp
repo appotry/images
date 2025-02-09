@@ -1,4 +1,5 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "../base.h"
 #include "../similar_image.h"
@@ -221,13 +222,9 @@ TEST_CASE("attention crop", "[alignment]") {
     }
 }
 
-TEST_CASE("skip height in toilet-roll mode", "[alignment]") {
-    if (vips_type_find("VipsOperation", true_streaming
-                                            ? "gifload_source"
-                                            : "gifload_buffer") == 0 ||
-        vips_type_find("VipsOperation", pre_8_12
-                                                 ? "magicksave_buffer"
-                                                 : "gifsave_target") == 0) {
+TEST_CASE("animated image", "[alignment]") {
+    if (vips_type_find("VipsOperation", "gifload_buffer") == 0 ||
+        vips_type_find("VipsOperation", "gifsave_buffer") == 0) {
         SUCCEED("no gif support, skipping test");
         return;
     }
@@ -238,5 +235,5 @@ TEST_CASE("skip height in toilet-roll mode", "[alignment]") {
     VImage image = process_file<VImage>(test_image, params);
 
     CHECK(image.width() == 300);
-    CHECK(vips_image_get_page_height(image.get_image()) == 318);
+    CHECK(vips_image_get_page_height(image.get_image()) == 300);
 }

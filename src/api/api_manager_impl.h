@@ -5,8 +5,7 @@
 
 #include <weserv/api_manager.h>
 
-namespace weserv {
-namespace api {
+namespace weserv::api {
 
 /**
  * Implements ApiManager interface.
@@ -18,8 +17,8 @@ class ApiManagerImpl : public ApiManager {
     ~ApiManagerImpl() override;
 
     utils::Status process(const std::string &query,
-                          std::unique_ptr<io::SourceInterface> source,
-                          std::unique_ptr<io::TargetInterface> target,
+                          const std::unique_ptr<io::SourceInterface> &source,
+                          const std::unique_ptr<io::TargetInterface> &target,
                           const Config &config) override;
 
     utils::Status process_file(const std::string &query,
@@ -73,5 +72,4 @@ class ApiManagerImpl : public ApiManager {
     unsigned int handler_id_ = 0;
 };
 
-}  // namespace api
-}  // namespace weserv
+}  // namespace weserv::api

@@ -2,24 +2,13 @@
 
 #include "base.h"
 
-namespace weserv {
-namespace api {
-namespace processors {
+namespace weserv::api::processors {
 
 class Orientation : ImageProcessor {
  public:
-    Orientation(std::shared_ptr<parsers::Query> query, const Config &config)
-        : ImageProcessor(std::move(query)), config_(config) {}
+    using ImageProcessor::ImageProcessor;
 
     VImage process(const VImage &image) const override;
-
- private:
-    /**
-     * Global config.
-     */
-    const Config &config_;
 };
 
-}  // namespace processors
-}  // namespace api
-}  // namespace weserv
+}  // namespace weserv::api::processors

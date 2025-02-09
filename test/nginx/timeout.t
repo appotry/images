@@ -5,7 +5,6 @@ use Test::Nginx::Util qw($ServerPort $ServerAddr);
 
 plan tests => repeat_each() * (blocks() * 5);
 
-$ENV{TEST_NGINX_HTML_DIR} ||= html_dir();
 $ENV{TEST_NGINX_URI} = "http://$ServerAddr:$ServerPort";
 
 our $HttpConfig = qq{
@@ -29,7 +28,7 @@ __DATA__
     GET /images?url=10.255.255.1
 --- response_headers
 Content-Type: application/json
---- response_body_like: ^.*"code":404,"message":"The requested URL timed out.".*$
+--- response_body_like: ^.*"code":404,"message":"The requested URL timed out".*$
 --- error_code: 404
 --- error_log
 [error]
@@ -41,8 +40,8 @@ Content-Type: application/json
 --- http_config eval: $::HttpConfig
 --- config
     location /sleep {
-        echo_sleep 2;
-        echo "200 OK";
+        proxy_buffering off;
+        proxy_pass http://unix:timeout_test.sock;
     }
 
     location /images {
@@ -53,7 +52,12 @@ Content-Type: application/json
 "GET /images?url=$ENV{TEST_NGINX_URI}/sleep"
 --- response_headers
 Content-Type: application/json
---- response_body_like: ^.*"code":404,"message":"The requested URL timed out.".*$
+--- tcp_listen: timeout_test.sock
+--- tcp_no_close
+--- tcp_reply eval
+"HTTP/1.1 204 No Content\r\n\r\n"
+--- tcp_reply_delay: 2s
+--- response_body_like: ^.*"code":404,"message":"The requested URL timed out".*$
 --- error_code: 404
 --- error_log
 [error]

@@ -1,34 +1,26 @@
 # Based on:
-# https://hg.nginx.org/pkg-oss/file/tip/alpine/Makefile
+# https://github.com/nginx/pkg-oss/blob/master/alpine/Makefile
 # https://github.com/nginxinc/docker-nginx/blob/master/mainline/alpine/Dockerfile
-FROM alpine:3.14
+FROM alpine:3.21
 
 LABEL maintainer="Kleis Auke Wolthuizen <info@kleisauke.nl>"
 
-ARG NGINX_VERSION=1.21.4
+ARG NGINX_VERSION=1.27.4
 
 # Copy the contents of this repository to the container
 COPY . /var/www/imagesweserv
 WORKDIR /var/www/imagesweserv
 
-# Set default timezone (can be overridden with -e "TZ=Continent/City")
-ENV TZ=Europe/Amsterdam \
-    # Increase the minimum stack size to 2MB
-    VIPS_MIN_STACK_SIZE=2m
-
-# The latest libvips can be installed from edge
-ARG ALPINE_REPO=https://dl-cdn.alpinelinux.org/alpine/edge/community
-
-# Create nginx user/group first, to be consistent throughout docker variants
+# Create nginx user/group
 RUN addgroup -g 101 -S nginx \
     && adduser -S -D -H -u 101 -h /var/cache/nginx -s /sbin/nologin -G nginx -g nginx nginx \
     # Bring in build dependencies
-    && apk add --no-cache --virtual .build-deps --repository $ALPINE_REPO \
+    && apk add --no-cache --virtual .build-deps \
         build-base \
         cmake \
         git \
         openssl-dev \
-        pcre-dev \
+        pcre2-dev \
         vips-dev \
     # Build CMake-based project
     && cmake -S . -B _build \
@@ -53,14 +45,16 @@ RUN addgroup -g 101 -S nginx \
     && cmake --build _build -- -j$(nproc) \
     # Remove build directory and dependencies
     && rm -rf _build \
-    && apk del .build-deps \
+    && apk del --no-network .build-deps \
     # Bring in runtime dependencies
-    && apk add --no-cache --repository $ALPINE_REPO \
+    && apk add --no-cache \
         openssl \
-        pcre \
-        vips \
-    # Bring in tzdata so users could set the timezones through the environment
-    # variables
+        pcre2 \
+        vips-cpp \
+        vips-heif \
+        vips-magick \
+        vips-poppler \
+    # Bring in tzdata so users could set the timezones through the environment variables
     && apk add --no-cache tzdata \
     # Ensure nginx cache directory exist with the correct permissions
     && mkdir -m 700 /var/cache/nginx \
@@ -69,6 +63,11 @@ RUN addgroup -g 101 -S nginx \
     && ln -sf /dev/stderr /var/log/nginx/weserv-error.log \
     # Copy nginx configuration to the appropriate location
     && cp ngx_conf/*.conf /etc/nginx
+
+# Set default timezone (can be overridden with -e "TZ=Continent/City")
+ENV TZ=Europe/Amsterdam \
+    # Increase the minimum stack size to 2MB
+    VIPS_MIN_STACK_SIZE=2m
 
 EXPOSE 80
 

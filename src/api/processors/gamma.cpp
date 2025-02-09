@@ -1,8 +1,6 @@
 #include "gamma.h"
 
-namespace weserv {
-namespace api {
-namespace processors {
+namespace weserv::api::processors {
 
 VImage Gamma::process(const VImage &image) const {
     auto gamma = query_->get<float>("gam", 0.0F);
@@ -28,10 +26,8 @@ VImage Gamma::process(const VImage &image) const {
             .gamma(VImage::option()->set("exponent", 1.0 / gamma))
             .bandjoin(alpha);
     }
-    
+
     return image.gamma(VImage::option()->set("exponent", 1.0 / gamma));
 }
 
-}  // namespace processors
-}  // namespace api
-}  // namespace weserv
+}  // namespace weserv::api::processors

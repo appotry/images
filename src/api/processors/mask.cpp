@@ -1,5 +1,8 @@
 #include "mask.h"
 
+#include "../io/blob.h"
+#include "../utils/utility.h"
+
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
@@ -8,12 +11,12 @@
 #include <stdexcept>
 #include <tuple>
 
-namespace weserv {
-namespace api {
-namespace processors {
+namespace weserv::api::processors {
 
 using enums::MaskType;
 using parsers::Color;
+
+using io::Blob;
 
 std::string Mask::svg_path_by_type(const int width, const int height,
                                    const MaskType &mask,
@@ -121,18 +124,10 @@ std::string Mask::svg_path_by_type(const int width, const int height,
 
         coordinates.push_back({x, y});
 
-        if (x > x_max) {
-            x_max = x;
-        }
-        if (y > y_max) {
-            y_max = y;
-        }
-        if (x < x_min) {
-            x_min = x;
-        }
-        if (y < y_min) {
-            y_min = y;
-        }
+        x_max = std::max(x, x_max);
+        y_max = std::max(y, y_max);
+        x_min = std::min(x, x_min);
+        y_min = std::min(y, y_min);
     }
 
     *out_x_min = static_cast<int>(std::round(x_min));
@@ -147,10 +142,9 @@ std::string Mask::svg_path_by_type(const int width, const int height,
 
     std::string path = transformed_path_string(coordinates, mask_transl, scale);
 
-    // If an odd number of points, add an additional point at the top of the
-    // polygon this will shift the calculated center point of the shape so that
-    // the center point of the polygon is at x,y (otherwise the center is
-    // mis-located)
+    // If an odd number of points, add a point at the top of the polygon; this
+    // will shift the calculated center point of the shape so that the center
+    // point of the polygon is at x,y (otherwise the center is mis-located)
     if (points % 2 == 1) {
         path = "M0 " + std::to_string(outer_radius) + " " + path;
     }
@@ -195,18 +189,10 @@ Mask::heart_path(const float cx, const float cy, int *out_x_min, int *out_y_min,
 
         coordinates.push_back({x, y});
 
-        if (x > x_max) {
-            x_max = x;
-        }
-        if (y > y_max) {
-            y_max = y;
-        }
-        if (x < x_min) {
-            x_min = x;
-        }
-        if (y < y_min) {
-            y_min = y;
-        }
+        x_max = std::max(x, x_max);
+        y_max = std::max(y, y_max);
+        x_min = std::min(x, x_min);
+        y_min = std::min(y, y_min);
     }
 
     *out_x_min = static_cast<int>(std::round(x_min));
@@ -254,7 +240,7 @@ Mask::translation_and_scaling(const int image_width, const int image_height,
     *mask_width = static_cast<int>(std::round(scaled_mask_width));
     *mask_height = static_cast<int>(std::round(scaled_mask_height));
 
-    return std::make_pair(mask_transl, scale);
+    return std::pair{mask_transl, scale};
 }
 
 std::string
@@ -265,11 +251,10 @@ Mask::transformed_path_string(const std::vector<PathCoordinate> &coordinates,
     ss << std::fixed << std::showpoint << std::setprecision(1);
 
     for (size_t i = 0; i != coordinates.size(); ++i) {
-        PathCoordinate coordinate = coordinates[i];
+        auto [x, y] = coordinates[i];
 
         auto prepend = i == 0 ? "M" : " L";
-        ss << prepend << coordinate.x * scale + transl.x << " "
-           << coordinate.y * scale + transl.y;
+        ss << prepend << x * scale + transl.x << " " << y * scale + transl.y;
     }
 
     ss << " Z";
@@ -281,19 +266,23 @@ VImage Mask::process(const VImage &image) const {
     auto mask_type = query_->get<MaskType>("mask", MaskType::None);
 
     // Should we process the image?
-    // Skip for multi-page images
-    if (mask_type == MaskType::None || query_->get<int>("n", 1) > 1) {
+    if (mask_type == MaskType::None) {
         return image;
     }
+
+    auto n_pages = query_->get<int>("n");
 
     int image_width = image.width();
     int image_height = image.height();
 
-    auto preserve_aspect_ratio =
+    auto page_height =
+        n_pages > 1 ? query_->get<int>("page_height") : image_height;
+
+    const auto *preserve_aspect_ratio =
         mask_type == MaskType::Ellipse ? "none" : "xMidYMid meet";
 
     int x_min, y_min, mask_width, mask_height;
-    auto path = svg_path_by_type(image_width, image_height, mask_type, &x_min,
+    auto path = svg_path_by_type(image_width, page_height, mask_type, &x_min,
                                  &y_min, &mask_width, &mask_height);
 
     auto mask_background = query_->get<Color>("mbg", Color::DEFAULT);
@@ -305,17 +294,25 @@ VImage Mask::process(const VImage &image) const {
     // an alpha channel
     if (!mask_background.is_opaque() || output_image.has_alpha()) {
         std::ostringstream svg;
-        svg << R"(<svg xmlns="http://www.w3.org/2000/svg" version="1.1")"
+        svg << R"(<svg xmlns="http://www.w3.org/2000/svg")"
+            << R"( xmlns:xlink="http://www.w3.org/1999/xlink")"
             << " width=\"" << image_width << "\" height=\"" << image_height
             << "\""
             << " preserveAspectRatio=\"" << preserve_aspect_ratio << "\">\n"
-            << "<path d=\"" << path << "\"/>\n"
-            << "</svg>";
+            << R"(<defs><path id="shape" d=")" << path << "\"/></defs>\n";
+        for (int i = 0; i < n_pages; ++i) {
+            svg << R"(<use xlink:href="#shape" y=")"
+                << static_cast<uint64_t>(page_height) * i << "\"/>\n";
+        }
+        svg << "</svg>";
 
         auto svg_mask = svg.str();
 
-        auto mask = VImage::new_from_buffer(
-            svg_mask, "",
+        // We don't take a copy of the data or free it
+        auto blob =
+            Blob(vips_blob_new(nullptr, svg_mask.data(), svg_mask.size()));
+        auto mask = VImage::svgload_buffer(
+            blob.get_blob(),
             VImage::option()->set("access", VIPS_ACCESS_SEQUENTIAL));
 
         // Cutout via dest-in
@@ -325,20 +322,28 @@ VImage Mask::process(const VImage &image) const {
     // If the mask background is not completely transparent; overlay the frame
     if (!mask_background.is_transparent()) {
         std::ostringstream svg;
-        svg << R"(<svg xmlns="http://www.w3.org/2000/svg" version="1.1")"
+        svg << R"(<svg xmlns="http://www.w3.org/2000/svg")"
+            << R"( xmlns:xlink="http://www.w3.org/1999/xlink")"
             << " width=\"" << image_width << "\" height=\"" << image_height
             << "\""
             << " preserveAspectRatio=\"" << preserve_aspect_ratio << "\">\n"
-            << "<path d=\"" << path << " M0 0 h" << image_width << " v"
-            << image_height << " h-" << image_width
+            << R"(<defs><path id="shape" d=")" << path << " M0 0 h"
+            << image_width << " v" << page_height << " h-" << image_width
             << R"( Z" fill-rule="evenodd" )"
-            << "fill=\"" << mask_background.to_string() << "\"/>\n"
-            << "</svg>";
+            << "fill=\"" << mask_background.to_string() << "\"/></defs>\n";
+        for (int i = 0; i < n_pages; ++i) {
+            svg << R"(<use xlink:href="#shape" y=")"
+                << static_cast<uint64_t>(page_height) * i << "\"/>\n";
+        }
+        svg << "</svg>";
 
         auto svg_frame = svg.str();
 
-        auto frame = VImage::new_from_buffer(
-            svg_frame, "",
+        // We don't take a copy of the data or free it
+        auto blob =
+            Blob(vips_blob_new(nullptr, svg_frame.data(), svg_frame.size()));
+        auto frame = VImage::svgload_buffer(
+            blob.get_blob(),
             VImage::option()->set("access", VIPS_ACCESS_SEQUENTIAL));
 
         // Ensure image to composite is premultiplied sRGB
@@ -350,15 +355,25 @@ VImage Mask::process(const VImage &image) const {
             VImage::option()->set("premultiplied", true));
     }
 
-    // Crop the image to the mask dimensions;
-    // if the mask type is not a ellipse and trimming is needed
+    // Crop the image to the mask dimensions:
+    //  - if the mask type is not an ellipse
+    //  - trimming is needed
     if (mask_type != MaskType::Ellipse &&
-        (mask_width < image_width || mask_height < image_height) &&
+        (mask_width < image_width || mask_height < page_height) &&
         query_->get<bool>("mtrim", false)) {
         auto left =
             static_cast<int>(std::round((image_width - mask_width) / 2.0));
         auto top =
-            static_cast<int>(std::round((image_height - mask_height) / 2.0));
+            static_cast<int>(std::round((page_height - mask_height) / 2.0));
+
+        if (n_pages > 1) {
+            // Update the page height
+            query_->update("page_height", mask_height);
+
+            return utils::crop_multi_page(output_image, config_.process_timeout,
+                                          left, top, mask_width, mask_height,
+                                          n_pages, page_height);
+        }
 
         return output_image.extract_area(left, top, mask_width, mask_height);
     }
@@ -366,6 +381,4 @@ VImage Mask::process(const VImage &image) const {
     return output_image;
 }
 
-}  // namespace processors
-}  // namespace api
-}  // namespace weserv
+}  // namespace weserv::api::processors

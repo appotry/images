@@ -4,10 +4,10 @@ extern "C" {
 #include <ngx_http.h>
 }
 
+#include <ctime>
 #include <string>
 
-namespace weserv {
-namespace nginx {
+namespace weserv::nginx {
 
 /**
  * Convert a ngx_str_t to std::string.
@@ -28,7 +28,7 @@ bool is_base64_needed(ngx_http_request_t *r);
 /**
  * Converts an entire output chain to base64.
  */
-ngx_int_t output_chain_to_base64(ngx_http_request_t *r, ngx_chain_t *out);
+ngx_chain_t *output_chain_to_base64(ngx_http_request_t *r, ngx_chain_t *in);
 
 /**
  * Get the Content-Disposition response header.
@@ -63,5 +63,4 @@ inline bool ngx_string_equal(const ngx_str_t &str1, const ngx_str_t &str2) {
  */
 void ngx_weserv_log(ngx_log_t *log, ngx_uint_t level, ngx_str_t msg);
 
-}  // namespace nginx
-}  // namespace weserv
+}  // namespace weserv::nginx

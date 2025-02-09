@@ -1,112 +1,119 @@
 name: CI
+
 on:
   # Only trigger this workflow for the 5.x branch
   push:
-    branches:
-      - 5.x
-    tags:
-      - v*
+    branches: [ '5.x' ]
+    tags: [ 'v*.*.*' ]
   pull_request:
-    branches:
-      - 5.x
+    branches: [ '5.x' ]
+
+permissions: {}
+
 jobs:
   CI:
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.libvips-version == 'master' }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: true
       matrix:
         include:
-          # TODO(kleisauke): Enable once tiffsave_target/magickload_source is supported
-          # - os: ubuntu-20.04
-          #   libvips-version: master
-          - os: ubuntu-20.04
-            libvips-version: 8.12.0
+          - os: ubuntu-24.04
+            libvips-version: 8.16.0
             coverage: true
+
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Cache libvips
-        if: matrix.libvips-version != 'master'
         id: cache-libvips
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: ~/vips
           key: ${{ matrix.libvips-version }}
+
       - name: Install dependencies
-        env:
-          DEBIAN_FRONTEND: noninteractive
-          APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE: 1
         run: |
           # for Test::Nginx
-          curl -sSL "https://openresty.org/package/pubkey.gpg" | sudo -E apt-key add -
-          echo "deb https://openresty.org/package/ubuntu $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/openresty.list
-          # add support for HEIC/AVIF images
-          sudo apt-add-repository -y "ppa:strukturag/libheif"
-          sudo apt-add-repository -y "ppa:strukturag/libde265"
-          # add support for saving GIF images
-          sudo apt-add-repository -y "ppa:lovell/cgif"
+          curl -fsSL https://openresty.org/package/pubkey.gpg | sudo gpg --dearmor -o /usr/share/keyrings/openresty.gpg
+          echo "deb [signed-by=/usr/share/keyrings/openresty.gpg] https://openresty.org/package/ubuntu $(lsb_release -sc) main" | \
+            sudo tee /etc/apt/sources.list.d/openresty.list > /dev/null
           # install dependencies
           sudo apt-get update
-          sudo -E apt-get install -y \
-            libcgif-dev libexif-dev libexpat1-dev \
-            libfftw3-dev libgsf-1-dev libheif-dev \
-            libimagequant-dev liblcms2-dev libmagickwand-dev \
-            liborc-0.4-dev libpango1.0-dev libpng-dev \
-            libpoppler-glib-dev librsvg2-dev libtiff5-dev \
-            libwebp-dev \
-            gtk-doc-tools gobject-introspection \
+          sudo apt-get install --no-install-recommends \
+            catch2 meson \
             libtest-nginx-perl \
-            lcov
+            libcgif-dev libexif-dev libexpat1-dev \
+            libheif-dev libheif-plugin-aomenc libheif-plugin-x265 \
+            libhwy-dev libimagequant-dev libjxl-dev \
+            liblcms2-dev libmagickcore-dev libopenjp2-7-dev \
+            libpango1.0-dev libpoppler-glib-dev librsvg2-dev \
+            libspng-dev libtiff5-dev libwebp-dev
+
       - name: Install libvips
         if: steps.cache-libvips.outputs.cache-hit != 'true'
         env:
           VIPS_VERSION: ${{ matrix.libvips-version }}
-          VIPS_PRE_VERSION: ${{ matrix.libvips-pre-version }}
-        run: .ci/install-vips.sh --disable-deprecated
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir vips
+          curl -Ls https://github.com/libvips/libvips/releases/download/v$VIPS_VERSION/vips-$VIPS_VERSION.tar.xz | \
+            tar xJC vips --strip-components=1
+          cd vips
+          meson setup build --prefix=$HOME/vips --libdir=lib -Ddeprecated=false -Dintrospection=disabled
+          meson compile -C build
+          meson install -C build
+
       - name: Prepare environment
         run: |
           echo "$HOME/vips/bin" >> $GITHUB_PATH
           echo "$HOME/nginx/sbin" >> $GITHUB_PATH
           echo "LD_LIBRARY_PATH=$HOME/vips/lib" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=$HOME/vips/lib/pkgconfig" >> $GITHUB_ENV
-          mkdir -p build
+
       - name: Build
-        working-directory: build
         run: |
-          cmake .. \
+          cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCUSTOM_NGX_FLAGS="--prefix=$HOME/nginx" \
             -DENABLE_COVERAGE=$([ "${{ matrix.coverage }}" = true ] && echo "ON" || echo "OFF") \
             -DBUILD_TESTS=ON
-          cmake --build . -- -j$(nproc)
+          cmake --build build -- -j$(nproc)
+
       - name: Run unit tests
         env:
           VIPS_WARNING: 0
-        working-directory: build
-        run: ctest -j $(nproc) --output-on-failure
+        run: ctest --test-dir build -j $(nproc) --output-on-failure
+
       - name: Run integration tests
         env:
           TEST_NGINX_SERVROOT: ${{ github.workspace }}/servroot
         run: prove -r test/nginx
-      - name: Generate coverage report
-        if: matrix.coverage
-        working-directory: build
-        run: cmake --build . --target coverage
+
       - name: Upload coverage to Codecov
         if: matrix.coverage
-        uses: codecov/codecov-action@v2
+        uses: codecov/codecov-action@v5
         with:
-          file: build/coverage.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+
   docker-publish:
     needs: CI
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           submodules: true
+
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v3
+        uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
           # Add git branch, tag and short SHA as Docker tag
@@ -122,17 +129,19 @@ jobs:
           labels: |
             org.opencontainers.image.authors=admin@weserv.nl
             org.opencontainers.image.documentation=https://github.com/weserv/images/tree/5.x/docker
-            org.opencontainers.image.description=Images.weserv.nl dockerized
-            org.opencontainers.image.vendor=images.weserv.nl
+            org.opencontainers.image.description=weserv/images
+            org.opencontainers.image.vendor=wsrv.nl
+
       - name: Login to GitHub Container Registry
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v1
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ secrets.CR_USER }}
-          password: ${{ secrets.CR_PAT }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build and push
-        uses: docker/build-push-action@v2
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./docker/Dockerfile
